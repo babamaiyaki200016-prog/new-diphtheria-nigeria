@@ -34,6 +34,51 @@ p7 <- state_data %>%
 
 ggsave("figures/fig3_state_distribution.png", p7, width = 22, height = 14, units = "cm", dpi = 300)
 
+# --- bubble map: state centroids sized by confirmed cases -------------------
+suppressPackageStartupMessages({
+  library(sf)
+  library(rnaturalearth)
+})
+
+nigeria_states <- ne_states(country = "Nigeria", returnclass = "sf")
+
+# name reconciliation between Table 3's labels and Natural Earth's
+name_map <- c(
+  "Kano" = "Kano", "Yobe" = "Yobe", "Borno" = "Borno", "Katsina" = "Katsina",
+  "Bauchi" = "Bauchi", "Kaduna" = "Kaduna", "Jigawa" = "Jigawa",
+  "Sokoto" = "Sokoto", "Gombe" = "Gombe", "Lagos" = "Lagos", "Plateau" = "Plateau"
+)
+
+centroids <- nigeria_states %>%
+  filter(name %in% name_map) %>%
+  st_centroid() %>%
+  transmute(state = name, geometry) %>%
+  st_as_sf()
+coords <- st_coordinates(centroids)
+centroids <- centroids %>% mutate(lon = coords[, 1], lat = coords[, 2]) %>% st_drop_geometry()
+
+map_data <- state_data %>%
+  filter(state != "Others") %>%
+  inner_join(centroids, by = "state")
+
+if (nrow(map_data) != 11) {
+  warning("Expected 11 named states to match Natural Earth boundaries, got ", nrow(map_data))
+}
+
+p8 <- ggplot() +
+  geom_sf(data = nigeria_states, fill = "grey90", color = "grey50", linewidth = 0.3) +
+  geom_point(data = map_data, aes(x = lon, y = lat, size = confirmed),
+             color = "#CC3333", alpha = 0.75) +
+  scale_size_area(max_size = 26, breaks = c(0, 5000, 10000, 15000, 20000, 25000),
+                   labels = scales::comma, name = "Confirmed\ncases") +
+  labs(title = "Geographic distribution of confirmed diphtheria cases, Nigeria, 2022-2026",
+       subtitle = "Bubble size represents cumulative confirmed cases by state (Table 3)",
+       x = "Longitude", y = "Latitude") +
+  theme_bw() +
+  theme(panel.grid.minor = element_blank())
+
+ggsave("figures/fig3_map.png", p8, width = 22, height = 18, units = "cm", dpi = 300)
+
 cat("\n--- Geographic concentration ---\n")
 top7 <- state_data %>% filter(state != "Others") %>% slice_head(n = 7)
 cat("Top 7 states account for", round(sum(top7$suspected) / sum(state_data$suspected) * 100, 1),
