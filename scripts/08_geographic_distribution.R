@@ -28,7 +28,7 @@ p7 <- state_data %>%
   scale_fill_manual(values = c(suspected = "#88CCEE", confirmed = "#332288"),
                      labels = c(suspected = "Suspected", confirmed = "Confirmed")) +
   labs(title = "Diphtheria cases by state, Nigeria, 2022-2026",
-       subtitle = "Source: Manuscript v2, Table 3 (NCDC sitrep, cumulative to epi week 3, 2026)",
+       subtitle = "Source: NCDC situation report, Table 3 (cumulative to epi week 3, 2026)",
        x = NULL, y = "Cases", fill = NULL) +
   theme_bw() + theme(legend.position = "top")
 
