@@ -132,51 +132,106 @@ log_posterior_transformed <- function(tp) {
 }
 
 set.seed(20260824)
-n_iter  <- 12000
-burn_in <- 3000
+n_iter    <- 20000
+burn_in   <- 8000
+n_chains  <- 4
+tp_names  <- c("log_beta", "log_N_eff", "logit_rho", "log_I0")
 
-tp_names <- c("log_beta", "log_N_eff", "logit_rho", "log_I0")
-tp_chain <- matrix(NA_real_, n_iter, length(tp_names), dimnames = list(NULL, tp_names))
-tp   <- c(log_beta = log(gamma_rate * 4.5), log_N_eff = log(30000),
-          logit_rho = qlogis(0.85), log_I0 = log(20))
-# step sizes calibrated by a short pilot run (grid over a multiplicative
-# scale factor) to land in the ~20-40% Metropolis acceptance target; the
-# untuned starting guess above (0.06, 0.25, 0.3, 0.3) accepted <1% of
-# proposals and produced implausibly narrow posterior intervals
-step <- c(log_beta = 0.003, log_N_eff = 0.0125, logit_rho = 0.015, log_I0 = 0.015)
+# A single fixed step size (calibrated by pilot run for a chain starting
+# near the posterior mode) does not work for overdispersed chains: the
+# first attempt at multi-chain diagnostics below used a fixed step and got
+# R-hat up to 8.5 with effective sample sizes as low as 9 -- the far-off
+# chains simply couldn't cover the distance to the posterior mode in
+# 12,000 iterations at that step scale. Fixed here with diminishing-adaptation
+# Metropolis (per-parameter step size rescaled toward a target acceptance
+# rate during burn-in only, then frozen for the sampling phase) and a
+# longer run (20,000 iterations, 8,000 burn-in) -- both needed together;
+# adaptation alone did not close the gap within the original iteration
+# budget.
+target_accept <- 0.25
+adapt_every   <- 200
 
-lp_curr <- log_posterior_transformed(tp)
-n_accept <- 0
+# 4 chains from overdispersed starting points (R0 init 2, 4.5, 7, 10 on the
+# untransformed scale), so Gelman-Rubin R-hat below is a meaningful check of
+# convergence rather than 4 copies of the same trajectory
+start_points <- list(
+  c(log_beta = log(gamma_rate * 2),  log_N_eff = log(10000), logit_rho = qlogis(0.6), log_I0 = log(5)),
+  c(log_beta = log(gamma_rate * 4.5), log_N_eff = log(30000), logit_rho = qlogis(0.85), log_I0 = log(20)),
+  c(log_beta = log(gamma_rate * 7),  log_N_eff = log(60000), logit_rho = qlogis(0.7), log_I0 = log(40)),
+  c(log_beta = log(gamma_rate * 10), log_N_eff = log(100000), logit_rho = qlogis(0.9), log_I0 = log(60))
+)
 
-for (it in seq_len(n_iter)) {
-  tp_prop <- tp + rnorm(length(tp), 0, step)
-  names(tp_prop) <- names(tp)
-  lp_prop <- log_posterior_transformed(tp_prop)
-  accept_ratio <- lp_prop - lp_curr
-  if (is.finite(accept_ratio) && log(runif(1)) < accept_ratio) {
-    tp <- tp_prop
-    lp_curr <- lp_prop
-    n_accept <- n_accept + 1
+run_chain <- function(tp_init, chain_id) {
+  tp_chain <- matrix(NA_real_, n_iter, length(tp_names), dimnames = list(NULL, tp_names))
+  tp <- tp_init
+  # relatively large initial step (as a multiple of the original fixed
+  # step) so chains starting far from the mode can actually get there;
+  # shrinks via the acceptance-rate feedback below as each chain approaches
+  # its stationary region
+  step <- c(log_beta = 0.05, log_N_eff = 0.3, logit_rho = 0.3, log_I0 = 0.3)
+  lp_curr <- log_posterior_transformed(tp)
+  n_accept <- 0
+  window_accept <- 0
+
+  for (it in seq_len(n_iter)) {
+    tp_prop <- tp + rnorm(length(tp), 0, step)
+    names(tp_prop) <- names(tp)
+    lp_prop <- log_posterior_transformed(tp_prop)
+    accept_ratio <- lp_prop - lp_curr
+    if (is.finite(accept_ratio) && log(runif(1)) < accept_ratio) {
+      tp <- tp_prop
+      lp_curr <- lp_prop
+      n_accept <- n_accept + 1
+      window_accept <- window_accept + 1
+    }
+    tp_chain[it, ] <- tp
+
+    # diminishing-adaptation: rescale the whole step vector (not
+    # per-parameter -- one accept/reject per iteration only gives one
+    # acceptance-rate signal) toward the target block-acceptance rate;
+    # frozen after burn-in so the sampling phase is a fixed-proposal chain
+    if (it <= burn_in && it %% adapt_every == 0) {
+      rate <- window_accept / adapt_every
+      step <- step * exp((rate - target_accept) * 0.5)
+      window_accept <- 0
+    }
   }
-  tp_chain[it, ] <- tp
-  if (it %% 1000 == 0) cat("  MCMC iter", it, "/", n_iter, "\n")
+  cat("  chain", chain_id, "acceptance rate:", round(n_accept / n_iter, 3), "\n")
+  tp_chain
 }
 
+chains <- map(seq_len(n_chains), ~ run_chain(start_points[[.x]], .x))
+
 keep <- (burn_in + 1):n_iter
+
+# --- convergence diagnostics: Gelman-Rubin R-hat and effective sample size ---
+suppressPackageStartupMessages(library(coda))
+mcmc_list <- as.mcmc.list(map(chains, ~ mcmc(.x[keep, ])))
+gelman_diag <- gelman.diag(mcmc_list, autoburnin = FALSE)
+ess <- effectiveSize(mcmc_list)
+
+cat("\n--- Bayesian SEIR model: MCMC convergence diagnostics ---\n")
+cat("Fitting window:", as.character(wave_start), "to", as.character(wave_end),
+    "(", n_weeks, "weeks -- the main wave only; see header comment)\n")
+cat(n_chains, "chains x", n_iter, "iterations (", burn_in, "burn-in ), overdispersed starts\n")
+cat("\nGelman-Rubin R-hat (target < 1.1):\n")
+print(gelman_diag$psrf)
+cat("\nEffective sample size (pooled across chains, target > ~400 per parameter):\n")
+print(round(ess))
+
+# pool post-burn-in draws across all chains for the final posterior
+tp_pooled <- do.call(rbind, map(chains, ~ .x[keep, ]))
+
 posterior <- tibble(
-  beta  = exp(tp_chain[keep, "log_beta"]),
-  N_eff = exp(tp_chain[keep, "log_N_eff"]),
-  rho   = plogis(tp_chain[keep, "logit_rho"]),
-  I0    = exp(tp_chain[keep, "log_I0"])
+  beta  = exp(tp_pooled[, "log_beta"]),
+  N_eff = exp(tp_pooled[, "log_N_eff"]),
+  rho   = plogis(tp_pooled[, "logit_rho"]),
+  I0    = exp(tp_pooled[, "log_I0"])
 ) %>% mutate(R0 = beta / gamma_rate)
 
 write_csv(posterior, "data/transmission_model_posterior.csv")
 
-cat("\n--- Bayesian SEIR model: MCMC diagnostics ---\n")
-cat("Fitting window:", as.character(wave_start), "to", as.character(wave_end),
-    "(", n_weeks, "weeks -- the main wave only; see header comment)\n")
-cat("Acceptance rate:", round(n_accept / n_iter, 3), "(target ~0.2-0.4)\n")
-cat("\nPosterior summaries (post burn-in):\n")
+cat("\nPosterior summaries (pooled across", n_chains, "chains, post burn-in):\n")
 summ <- posterior %>%
   summarise(across(everything(), list(mean = mean, lo = ~quantile(.x, 0.025),
                                        hi = ~quantile(.x, 0.975))))
