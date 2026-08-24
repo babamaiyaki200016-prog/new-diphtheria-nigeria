@@ -51,7 +51,7 @@ p1 <- ggplot(epi_curve, aes(x = week_start, y = confirmed_cases, fill = source))
   scale_fill_manual(
     values = c(kano_linelist = "#117733", manuscript_v2_table1 = "#CC6677"),
     labels = c(kano_linelist = "Kano line list (case-level)",
-               manuscript_v2_table1 = "NCDC sitrep points (Manuscript v2, Table 1)")
+               manuscript_v2_table1 = "NCDC situation report points (Table 1)")
   ) +
   scale_x_date(date_labels = "%b %Y", date_breaks = "4 months") +
   labs(
